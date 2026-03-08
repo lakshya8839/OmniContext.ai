@@ -3,14 +3,21 @@
  * Pattern-based technical site detection.
  */
 
-export type TechnicalContextType = "QUESTION" | "DOCS" | "TUTORIAL" | "CODE_VIEW" | "UNKNOWN"
+export type TechnicalContextType = "QUESTION" | "DOCS" | "TUTORIAL" | "CODE_VIEW" | "REPO_HOME" | "UNKNOWN"
 
 export class SiteDetector {
   static detect(): TechnicalContextType {
     const text = document.body.innerText.toLowerCase()
     const url = window.location.href.toLowerCase()
 
-    // 1. Code View patterns
+    // 1. Repo Home patterns (GitHub specific)
+    // github.com/user/repo or github.com/user/repo/tree/branch
+    const githubRepoHomeRegex = /^https?:\/\/(www\.)?github\.com\/[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+(\/tree\/[a-zA-Z0-9._\-\/]+)?\/?$/i
+    if (githubRepoHomeRegex.test(window.location.href) && !url.includes("/blob/")) {
+      if (document.querySelector(".repository-content")) return "REPO_HOME"
+    }
+
+    // 2. Code View patterns
     if (url.includes("/blob/") || url.includes("/src/") || !!document.querySelector(".blob-code, .line-numbers")) {
       return "CODE_VIEW"
     }

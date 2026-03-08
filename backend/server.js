@@ -84,7 +84,21 @@ app.post("/analyze", async (req, res) => {
     })
   }
 
-  if (pageType === "CODE_VIEW") {
+  if (pageType === "REPO_HOME") {
+    systemPrompt = `You are an expert software architect.
+Analyze the repository's file structure and README content to provide an architectural overview.
+Return valid JSON only:
+{
+  "heading": "Professional title (e.g., 'Project Architecture: [Name]')",
+  "summary": "High-level summary of the codebase's purpose and tech stack (2-3 sentences)",
+  "problem": "Main architectural approach or primary goal of the project",
+  "cause": "Key implementation details and repository organization (3-5 sentences)",
+  "fix": "Notable architectural patterns or potential codebase improvements",
+  "exampleCode": "Representative implementation pattern snippet or structure diagram",
+  "resources": [{ "title": "Main Repository", "url": "..." }]
+}`
+    userPrompt = `Repository Context:\n${mainContent}\nPerform an architectural report.`
+  } else if (pageType === "CODE_VIEW") {
     systemPrompt = `You are an expert code reviewer and architect.
 Analyze the source code provided and provide a technical breakdown.
 Return valid JSON only:

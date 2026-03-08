@@ -29,7 +29,7 @@ export class AIOrchestrator {
     // 3. Call Service
     const payload = {
       ...fusedContext,
-      pageType: context.type, // Map 'type' to backend 'pageType'
+      pageType: context.pageType, // Map 'pageType' to backend 'pageType'
       mainContent: sanitizedContent,
       codeSnippet: sanitizedCode
     }

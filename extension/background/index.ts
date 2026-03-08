@@ -31,38 +31,62 @@ chrome.commands.onCommand.addListener((command) => {
   }
 })
 
-// ... (onInstalled listener remains same)
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "install") {
+    chrome.tabs.create({ url: "welcome.html" })
+  }
+})
 
 // Allow side panel to open on action click, but it will only open for ENABLED tabs
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error)
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // ... (START_ANALYSIS handler remains same)
+  console.log(`[OmniContext.ai Background] Received message: ${message.type}`, sender.tab?.id)
+
+  if (message.type === "START_ANALYSIS") {
+    const tabId = sender.tab?.id
+    if (tabId) {
+      storage.set(`pendingContext_${tabId}`, message.payload).then(() => {
+        console.log(`[OmniContext.ai Background] Context saved for tab ${tabId}`)
+        sendResponse({ success: true })
+      }).catch(err => {
+        console.error(`[OmniContext.ai Background] Failed to save context:`, err)
+        sendResponse({ success: false, error: err.message })
+      })
+      return true // Async
+    }
+  }
 
   // OPEN_SIDEPANEL: Enable and then open for this specific tab
   if (message.type === "OPEN_SIDEPANEL") {
     const tabId = sender.tab?.id
     if (tabId) {
+      console.log(`[OmniContext.ai Background] Opening SidePanel for tab ${tabId}`)
       chrome.sidePanel.setOptions({
         tabId,
         path: "sidepanel.html",
         enabled: true
       }).then(() => {
-        chrome.sidePanel.open({ tabId }).catch((err) => {
-          console.error("[OmniContext.ai] Failed to open side panel:", err)
+        chrome.sidePanel.open({ tabId }).then(() => {
+          console.log(`[OmniContext.ai Background] SidePanel opened successfully`)
+        }).catch((err) => {
+          console.error("[OmniContext.ai Background] Failed to open side panel:", err)
         })
+      }).catch(err => {
+        console.error("[OmniContext.ai Background] Failed to set side panel options:", err)
       })
     }
     sendResponse({ success: true })
+    // No return true because open() is fire-and-forget here relative to the response
   }
 
   if (message.type === "GET_TAB_ID") {
     sendResponse({ tabId: sender.tab?.id })
+    // Sync response
   }
 
   if (message.type === "CAPTURE_SCREEN") {
-    // Use WINDOW_ID_CURRENT if no specific window is found
     const windowId = sender.tab?.windowId ?? chrome.windows.WINDOW_ID_CURRENT
     chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
       if (chrome.runtime.lastError) {
@@ -71,7 +95,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true, dataUrl })
       }
     })
-    return true // Keep channel open for async response
+    return true 
   }
 })
 

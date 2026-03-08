@@ -69,6 +69,18 @@ export class ContextEngine {
   }
 
   private static extractMainContent(): string {
+    const pageType = SiteDetector.detect()
+    
+    if (pageType === "REPO_HOME") {
+      const readme = document.querySelector("#readme article")?.textContent?.trim() || ""
+      const files = Array.from(document.querySelectorAll(".Box-row, [role='row'].react-directory-row"))
+        .map(row => (row as HTMLElement).innerText.split("\n")[0].trim())
+        .filter(name => name && !name.includes(".."))
+        .join(", ")
+      
+      return `REPOSIORY FILES: ${files}\n\nREADME CONTENT:\n${readme.substring(0, 3000)}`
+    }
+
     const main = document.querySelector("article, main, #content, .post-text, .s-prose, .markdown-body")
     return (main?.textContent || document.body.innerText).trim().substring(0, 5000)
   }

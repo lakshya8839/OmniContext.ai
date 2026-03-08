@@ -64,6 +64,8 @@ export default function SidePanel() {
   // Critical for breaking loops and race conditions
   const activeTabIdRef = useRef<number | null>(null)
   const lastWatcherMapRef = useRef<any>(null)
+  const isInitializingRef = useRef<boolean>(false)
+  const lastAnalyzedRef = useRef<string | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
 
   // Set document title
@@ -78,8 +80,9 @@ export default function SidePanel() {
     const paramTabId = urlParams.get("tabId")
 
     const handleTabSwitch = (message: any) => {
-      if (message.type === "TAB_SWITCHED") {
+      if (message.type === "TAB_SWITCHED" && message.tabId !== activeTabIdRef.current) {
         initialize(message.tabId)
+        setupStorageWatch(message.tabId)
       }
     }
     chrome.runtime.onMessage.addListener(handleTabSwitch)
@@ -159,57 +162,70 @@ export default function SidePanel() {
   }, [status, context, result, summary, errorMsg, activeTab])
 
   async function initialize(tabId: number) {
+    if (isInitializingRef.current && activeTabIdRef.current === tabId) {
+      return
+    }
     activeTabIdRef.current = tabId
+    
     const key = `pendingContext_${tabId}`
     const stateKey = `tabState_${tabId}`
 
-    // 0. Restore saved state for this tab
-    const savedState: any = await storage.get(stateKey)
-    if (savedState) {
-      setStatus(savedState.status || "idle")
-      setContext(savedState.context || null)
-      setResult(savedState.result || null)
-      setSummary(savedState.summary || null)
-      setErrorMsg(savedState.errorMsg || "")
-      setActiveTab(savedState.activeTab || "overview")
-    } else {
-      setStatus("idle")
-      setContext(null)
-      setResult(null)
-      setSummary(null)
-      setErrorMsg("")
-      setActiveTab("overview")
-    }
-
-    // 1. Detect context REMOTELY from the content script
     try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "GET_CONTEXT" })
-      if (activeTabIdRef.current !== tabId) return 
+      // 0. Restore saved state for this tab
+      const savedState: any = await storage.get(stateKey)
+      if (activeTabIdRef.current !== tabId) return
 
-      if (response?.success && response.context) {
-        const pCtx = response.context as PageContext
-        setPageContext(pCtx)
-        await SessionContext.track(pCtx.url, pCtx.title, pCtx.pageType)
-
-        setLoadingSummary(true)
-        AIOrchestrator.processContext('summarize', pCtx).then(res => {
-          if (activeTabIdRef.current === tabId && res.summary) {
-            setSummary(res.summary)
-            setLoadingSummary(false)
-          }
-        })
+      if (savedState) {
+        setStatus(savedState.status || "idle")
+        setContext(savedState.context || null)
+        setResult(savedState.result || null)
+        setSummary(savedState.summary || null)
+        setErrorMsg(savedState.errorMsg || "")
+        setActiveTab(savedState.activeTab || "overview")
+      } else {
+        setStatus("idle")
+        setContext(null)
+        setResult(null)
+        setSummary(null)
+        setErrorMsg("")
+        setActiveTab("overview")
       }
-    } catch (err) {
-      console.warn("[SidePanel] Could not reach content script:", err)
-      setPageContext(null)
-    }
 
-    // 2. Check for pending analysis
-    const pending: any = await storage.get(key)
-    if (pending && activeTabIdRef.current === tabId) {
-      setContext(pending as ProcessedContext)
-      await storage.remove(key)
-      await runAnalysis(pending as ProcessedContext, tabId)
+      // 1. Detect context REMOTELY from the content script
+      try {
+        const response = await chrome.tabs.sendMessage(tabId, { type: "GET_CONTEXT" })
+        if (activeTabIdRef.current !== tabId) return 
+
+        if (response?.success && response.context) {
+          const pCtx = response.context as PageContext
+          setPageContext(pCtx)
+          await SessionContext.track(pCtx.url, pCtx.title, pCtx.pageType)
+
+          // Only summarize if we don't have one or if it's a new page
+          if (!savedState?.summary || savedState.context?.url !== pCtx.url) {
+            setLoadingSummary(true)
+            AIOrchestrator.processContext('summarize', pCtx).then(res => {
+              if (activeTabIdRef.current === tabId && res.summary) {
+                setSummary(res.summary)
+                setLoadingSummary(false)
+              }
+            }).catch(() => setLoadingSummary(false))
+          }
+        }
+      } catch (err) {
+        console.warn("[SidePanel] Could not reach content script:", err)
+        setPageContext(null)
+      }
+
+      // 2. Check for pending analysis
+      const pending: any = await storage.get(key)
+      if (pending && activeTabIdRef.current === tabId) {
+        setContext(pending as ProcessedContext)
+        await storage.remove(key)
+        await runAnalysis(pending as ProcessedContext, tabId)
+      }
+    } finally {
+      isInitializingRef.current = false
     }
   }
 
@@ -238,6 +254,12 @@ export default function SidePanel() {
   }
 
   async function runAnalysis(ctx: ProcessedContext, tabId?: number) {
+    const ctxFingerprint = JSON.stringify({ snippet: ctx.codeSnippet, error: ctx.error, file: ctx.filename });
+    if (lastAnalyzedRef.current === ctxFingerprint && status !== "idle") {
+      return;
+    }
+    lastAnalyzedRef.current = ctxFingerprint;
+
     if (!ctx) return
     setStatus("loading")
     setResult(null)
@@ -452,6 +474,7 @@ function ResultView({ result, context }: { result: AnalysisResult; context: Proc
   const [copiedFix, setCopiedFix] = useState(false)
   
   const isDoc = context?.pageType === "DOCS" || context?.pageType === "TUTORIAL"
+  const isRepo = context?.pageType === "REPO_HOME"
   const isBug = !!context?.error || (context?.errorType && context.errorType !== "None")
 
   function copyCode() {
@@ -471,7 +494,7 @@ function ResultView({ result, context }: { result: AnalysisResult; context: Proc
 
       {context && (
         <div className="context-pill-row">
-          <span className="pill pill-page">{context.pageType}</span>
+          <span className="pill pill-page">{context.pageType.replace("_", " ")}</span>
           {context.language !== "Unknown" && <span className="pill">{context.language}</span>}
           {context.framework !== "Unknown" && <span className="pill">{context.framework}</span>}
         </div>
@@ -481,8 +504,8 @@ function ResultView({ result, context }: { result: AnalysisResult; context: Proc
         <>
           <section className="result-section">
             <div className="section-header">
-              <span className="section-icon">{isBug ? "🔴" : "📘"}</span>
-              <h3>{isBug ? "Problem Detected" : "Code Purpose"}</h3>
+              <span className="section-icon">{isRepo ? "🏗️" : (isBug ? "🔴" : "📘")}</span>
+              <h3>{isRepo ? "Codebase Purpose" : (isBug ? "Problem Detected" : "Code Purpose")}</h3>
             </div>
             <div className="section-body">
               <p>{result.problem}</p>
@@ -491,8 +514,8 @@ function ResultView({ result, context }: { result: AnalysisResult; context: Proc
 
           <section className="result-section">
             <div className="section-header">
-              <span className="section-icon">{isBug ? "🔍" : "⚙️"}</span>
-              <h3>{isBug ? "Root Cause" : "Logic Breakdown"}</h3>
+              <span className="section-icon">{isRepo ? "🧩" : (isBug ? "🔍" : "⚙️")}</span>
+              <h3>{isRepo ? "Architectural Overview" : (isBug ? "Root Cause" : "Logic Breakdown")}</h3>
             </div>
             <div className="section-body">
               <p>{result.cause}</p>
@@ -501,8 +524,8 @@ function ResultView({ result, context }: { result: AnalysisResult; context: Proc
 
           <section className="result-section">
             <div className="section-header">
-              <span className="section-icon">{isBug ? "🔧" : "💡"}</span>
-              <h3>{isBug ? "Suggested Fix" : "Implementation Patterns"}</h3>
+              <span className="section-icon">{isRepo ? "🚀" : (isBug ? "🔧" : "💡")}</span>
+              <h3>{isRepo ? "Core Implementation" : (isBug ? "Suggested Fix" : "Implementation Patterns")}</h3>
             </div>
             <div className="section-body">
               <p>{result.fix}</p>

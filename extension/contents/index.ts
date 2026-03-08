@@ -38,7 +38,7 @@ async function init() {
 
 function setupInjection() {
   injectFloatingButton()
-  
+
   // GitHub acts as an SPA (single page application) and replaces the body,
   // which might remove our button. Observe DOM changes and re-inject if needed.
   const observer = new MutationObserver(() => {
@@ -46,7 +46,7 @@ function setupInjection() {
       injectFloatingButton()
     }
   })
-  
+
   observer.observe(document.body, { childList: true, subtree: true })
 }
 
@@ -83,7 +83,7 @@ function injectFloatingButton() {
     </svg>
     <span>Explain with AI</span>
   `
-  
+
   // Base styles inside shadow DOM
   const style = document.createElement('style')
   style.textContent = `
@@ -120,24 +120,31 @@ function injectFloatingButton() {
   `
 
   btn.addEventListener("click", handleAnalysis)
-  
+
   shadow.appendChild(style)
   shadow.appendChild(btn)
-  
-  // Append to document.documentElement to escape body transforms if any
-  ;(document.body || document.documentElement).appendChild(host)
+
+    // Append to document.documentElement to escape body transforms if any
+    ; (document.body || document.documentElement).appendChild(host)
 }
 
-// ─── Analysis flow ────────────────────────────────────────────────────────────
+// Helper for sendMessage with timeout
+async function sendMessageWithTimeout(message: any, timeoutMs = 5000): Promise<any> {
+  return Promise.race([
+    chrome.runtime.sendMessage(message),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`Message timeout: ${message.type}`)), timeoutMs))
+  ]);
+}
 
 async function handleAnalysis() {
-  // 1. Open the side panel IMMEDIATELY to preserve user gesture context.
-  // This must be the very first thing to ensure Chrome honors the gesture.
-  chrome.runtime.sendMessage({ type: "OPEN_SIDEPANEL" })
+  console.log("[OmniContext.ai] starting handleAnalysis");
+
+  // 1. Open the side panel IMMEDIATELY
+  chrome.runtime.sendMessage({ type: "OPEN_SIDEPANEL" });
 
   const host = document.getElementById("ai-context-layer-host")
   if (!host || !host.shadowRoot) return
-  
+
   const btn = host.shadowRoot.getElementById("ai-context-layer-btn") as HTMLButtonElement
   if (!btn) return
 
@@ -149,29 +156,42 @@ async function handleAnalysis() {
     </svg>
     <span>Analyzing…</span>
   `
-  // Get tab ID early so we can use it for storage
-  const tabs = await chrome.runtime.sendMessage({ type: "GET_TAB_ID" })
-  const tabId = tabs?.tabId
+  btn.disabled = true;
+
+  let tabId: number | undefined;
 
   try {
-    // 2. Extract context using the Universal Context Engine
-    const context = await ContextEngine.detect()
+    // 2. Get tab ID with timeout
+    try {
+      const response = await sendMessageWithTimeout({ type: "GET_TAB_ID" }, 3000);
+      tabId = response?.tabId;
+      console.log("[OmniContext.ai] Got tabId:", tabId);
+    } catch (e) {
+      console.warn("[OmniContext.ai] Failed to get tab ID via message, proceeding anyway", e);
+    }
 
-    // 3. Delegate analysis to SidePanel so it can show its own loading state
-    // We send START_ANALYSIS which the sidepanel watches for
-    await chrome.runtime.sendMessage({ 
-      type: "START_ANALYSIS", 
-      payload: context 
-    })
+    // 3. Extract context
+    console.log("[OmniContext.ai] running ContextEngine.detect()");
+    const context = await ContextEngine.detect();
+    console.log("[OmniContext.ai] detection complete", context.pageType);
+
+    // 4. Delegate analysis to SidePanel with timeout
+    console.log("[OmniContext.ai] sending START_ANALYSIS");
+    await sendMessageWithTimeout({
+      type: "START_ANALYSIS",
+      payload: context
+    }, 5000);
+    console.log("[OmniContext.ai] START_ANALYSIS acknowledged");
 
   } catch (err: any) {
-    console.error("[OmniContext.ai] Instruction failed:", err)
+    console.error("[OmniContext.ai] Instruction failed:", err);
     if (tabId) {
-      await storage.set(`lastResult_${tabId}`, {
+      // Best effort storage update
+      storage.set(`lastResult_${tabId}`, {
         result: { error: err.message || "Failed to start analysis" },
         context: null,
         timestamp: Date.now()
-      })
+      }).catch(() => { });
     }
   } finally {
     // Restore button after a delay
@@ -196,7 +216,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     showScanAnimation()
     sendResponse({ success: true })
   }
-  
+
   if (message.type === "GET_CONTEXT") {
     ContextEngine.detect().then(ctx => {
       sendResponse({ success: true, context: ctx })
